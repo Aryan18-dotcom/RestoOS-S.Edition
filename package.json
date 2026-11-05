@@ -1,0 +1,30 @@
+{
+  "name": "restaurant-pos-erp",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "bootstrap:superadmin": "node --env-file=.env.local scripts/bootstrap-superadmin.mjs"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "jose": "^5.9.6",
+    "lucide-react": "^0.468.0",
+    "mongoose": "^8.9.5",
+    "next": "^15.5.28",
+    "qrcode": "^1.5.4",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "recharts": "^2.15.0"
+  },
+  "devDependencies": {
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.5.32",
+    "tailwindcss": "^3.4.17"
+  },
+  "overrides": {
+    "postcss": "^8.5.32"
+  }
+}
