@@ -25,7 +25,7 @@ export async function POST(request) {
     });
     if (!branch) return NextResponse.json({ error: "Assigned branch is unavailable" }, { status: 403 });
     const customer = await Customer.findOne({ orgId: session.orgId, phone })
-      .select("name phone visitCount totalSpend averageOrderCost lastVisitAt")
+      .select("name phone visitCount totalSpend averageOrderCost lastVisitAt whatsappOptIn")
       .lean();
     if (!customer) {
       return NextResponse.json({
@@ -46,6 +46,7 @@ export async function POST(request) {
         visitCount: customer.visitCount,
         averageOrderCost: customer.averageOrderCost,
         lastVisitAt: customer.lastVisitAt,
+        whatsappOptIn: customer.whatsappOptIn === true,
         isRegular: customer.visitCount >= 3,
         suggestedDiscountPercent: customer.visitCount >= 3 ? 5 : 0,
       },

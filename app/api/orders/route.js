@@ -4,10 +4,10 @@ import connectToDatabase from "@/lib/db";
 import { getSession, isValidObjectId } from "@/lib/auth";
 import Branch from "@/models/Branch";
 import Customer from "@/models/Customer";
-import Organization from "@/models/Organization";
 import Order from "@/models/Order";
 import Product from "@/models/Product";
 import { isBranchManagerRole } from "@/lib/roles";
+import { migrateLegacyUpiSettings } from "@/lib/branch-payment-settings";
 
 const roundMoney = (value) => Math.round(value * 100) / 100;
 
@@ -27,6 +27,7 @@ export async function POST(request) {
   const customerPhone = typeof body?.customerPhone === "string"
     ? body.customerPhone.replace(/\D/g, "")
     : "";
+  const whatsappOptIn = body?.whatsappOptIn === true;
   const discountPercent = Number(body?.discountPercent || 0);
   if (
     !Array.isArray(sourceItems) ||
@@ -65,27 +66,20 @@ export async function POST(request) {
   }
 
   await connectToDatabase();
-  const [branch, organization] = await Promise.all([
-    Branch.findOne({
-      _id: session.branchId,
-      orgId: session.orgId,
-      isActive: true,
-    }).lean(),
-    Organization.findById(session.orgId)
-      .select("upiId upiPayerName upiCurrency")
-      .lean(),
-  ]);
+  await migrateLegacyUpiSettings(session.orgId);
+  const branch = await Branch.findOne({
+    _id: session.branchId,
+    orgId: session.orgId,
+    isActive: true,
+  }).lean();
   if (!branch) {
     return NextResponse.json({ error: "Assigned branch is unavailable" }, { status: 403 });
   }
-  if (!organization) {
-    return NextResponse.json({ error: "Restaurant configuration is unavailable" }, { status: 404 });
-  }
 
   const paymentSettings = {
-    upiId: organization.upiId || "",
-    upiPayerName: organization.upiPayerName || "",
-    upiCurrency: organization.upiCurrency || "INR",
+    upiId: branch.upiId || "",
+    upiPayerName: branch.payerName || "",
+    upiCurrency: "INR",
   };
   const upiConfigured = Boolean(paymentSettings.upiId && paymentSettings.upiPayerName);
   if (!upiConfigured && body?.confirmNoUpi !== true) {
@@ -195,6 +189,13 @@ export async function POST(request) {
             totalSpend: newSpend,
             averageOrderCost: { $divide: [newSpend, newVisits] },
             lastVisitAt: { $literal: new Date() },
+            whatsappOptIn: { $literal: whatsappOptIn },
+            whatsappOptInAt: {
+              $cond: [whatsappOptIn, { $literal: new Date() }, "$whatsappOptInAt"],
+            },
+            whatsappOptOutAt: {
+              $cond: [whatsappOptIn, null, { $literal: new Date() }],
+            },
           },
         }],
         { upsert: true, session: databaseSession },
@@ -213,6 +214,7 @@ export async function POST(request) {
         customerPhone: order.customerPhone,
         notes: order.notes,
         items: order.items.map((item) => ({
+          productId: item.productId.toString(),
           name: item.name,
           quantity: item.quantity,
           unitPrice: item.unitPrice,

@@ -56,22 +56,30 @@ export async function PATCH(request, { params }) {
       if (products.length !== quantities.size) {
         return NextResponse.json({ error: "One or more menu items are no longer available" }, { status: 400 });
       }
-      order.items = products.map((product) => {
-        const quantity = quantities.get(product._id.toString());
-        return {
-          productId: product._id,
-          name: product.name,
-          quantity,
-          unitPrice: product.price,
-          specialNote: specialNotes.get(product._id.toString()) || "",
-          discountPercent: 0,
-          total: Math.round(product.price * quantity * 100) / 100,
-        };
-      });
-      order.subtotal = Math.round(order.items.reduce((sum, item) => sum + item.total, 0) * 100) / 100;
-      order.discountPercent = 0;
-      order.discountAmount = 0;
-      order.grandTotal = order.subtotal + order.taxAmount;
+      const compositionUnchanged = order.items.length === quantities.size &&
+        order.items.every((item) => quantities.get(item.productId.toString()) === item.quantity);
+      if (compositionUnchanged) {
+        order.items.forEach((item) => {
+          item.specialNote = specialNotes.get(item.productId.toString()) || "";
+        });
+      } else {
+        order.items = products.map((product) => {
+          const quantity = quantities.get(product._id.toString());
+          return {
+            productId: product._id,
+            name: product.name,
+            quantity,
+            unitPrice: product.price,
+            specialNote: specialNotes.get(product._id.toString()) || "",
+            discountPercent: 0,
+            total: Math.round(product.price * quantity * 100) / 100,
+          };
+        });
+        order.subtotal = Math.round(order.items.reduce((sum, item) => sum + item.total, 0) * 100) / 100;
+        order.discountPercent = 0;
+        order.discountAmount = 0;
+        order.grandTotal = order.subtotal + order.taxAmount;
+      }
     }
 
     if (body.tableNumber !== undefined) order.tableNumber = String(body.tableNumber).slice(0, 40);

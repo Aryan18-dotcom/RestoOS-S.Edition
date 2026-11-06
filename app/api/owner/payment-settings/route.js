@@ -1,28 +1,33 @@
 import { NextResponse } from "next/server";
 import connectToDatabase from "@/lib/db";
-import { getSession } from "@/lib/auth";
-import Organization from "@/models/Organization";
+import { getSession, isValidObjectId } from "@/lib/auth";
+import Branch from "@/models/Branch";
+import { migrateLegacyUpiSettings } from "@/lib/branch-payment-settings";
 
 function isValidUpiId(value) {
   return /^[A-Za-z0-9._-]{2,64}@[A-Za-z0-9.-]{2,64}$/.test(value);
 }
 
-export async function GET() {
+export async function GET(request) {
   try {
     const session = await getSession();
     if (!session || session.role !== "OWNER") {
       return NextResponse.json({ error: "Owner access required" }, { status: 403 });
     }
     await connectToDatabase();
-    const organization = await Organization.findById(session.orgId)
-      .select("upiId upiPayerName upiCurrency")
+    await migrateLegacyUpiSettings(session.orgId);
+    const branchId = new URL(request.url).searchParams.get("branchId");
+    if (!isValidObjectId(branchId)) return NextResponse.json({ error: "A valid branch is required" }, { status: 400 });
+    const branch = await Branch.findOne({ _id: branchId, orgId: session.orgId, isActive: true })
+      .select("upiId payerName")
       .lean();
-    if (!organization) return NextResponse.json({ error: "Restaurant not found" }, { status: 404 });
+    if (!branch) return NextResponse.json({ error: "Branch not found" }, { status: 404 });
     return NextResponse.json({
       paymentSettings: {
-        upiId: organization.upiId || "",
-        upiPayerName: organization.upiPayerName || "",
-        upiCurrency: organization.upiCurrency || "INR",
+        branchId,
+        upiId: branch.upiId || "",
+        upiPayerName: branch.payerName || "",
+        upiCurrency: "INR",
       },
     });
   } catch (error) {
@@ -39,6 +44,8 @@ export async function PATCH(request) {
     const body = await request.json().catch(() => null);
     if (
       !body ||
+      typeof body.branchId !== "string" ||
+      !isValidObjectId(body.branchId) ||
       typeof body.upiId !== "string" ||
       typeof body.upiPayerName !== "string" ||
       body.upiId.length > 130 ||
@@ -55,17 +62,19 @@ export async function PATCH(request) {
     }
 
     await connectToDatabase();
-    const organization = await Organization.findByIdAndUpdate(
-      session.orgId,
-      { $set: { upiId, upiPayerName, upiCurrency: "INR" } },
+    await migrateLegacyUpiSettings(session.orgId);
+    const branch = await Branch.findOneAndUpdate(
+      { _id: body.branchId, orgId: session.orgId, isActive: true },
+      { $set: { upiId, payerName: upiPayerName } },
       { new: true, runValidators: true },
-    ).select("upiId upiPayerName upiCurrency");
-    if (!organization) return NextResponse.json({ error: "Restaurant not found" }, { status: 404 });
+    ).select("upiId payerName");
+    if (!branch) return NextResponse.json({ error: "Branch not found" }, { status: 404 });
     return NextResponse.json({
       paymentSettings: {
-        upiId: organization.upiId,
-        upiPayerName: organization.upiPayerName,
-        upiCurrency: organization.upiCurrency,
+        branchId: body.branchId,
+        upiId: branch.upiId,
+        upiPayerName: branch.payerName,
+        upiCurrency: "INR",
       },
     });
   } catch (error) {

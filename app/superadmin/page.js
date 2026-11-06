@@ -6,6 +6,7 @@ import {
   GitBranch,
   KeyRound,
   LogOut,
+  MessageCircle,
   Plus,
   RefreshCw,
   ShieldCheck,
@@ -155,7 +156,7 @@ function DeleteConfirmModal({ title, message, onCancel, onConfirm }) {
 }
 
 // ─── Users Section ─────────────────────────────────────────────────────────
-function UsersSection() {
+function UsersSection({ selectedOrgId }) {
   const [users, setUsers]     = useState([]);
   const [orgs, setOrgs] = useState([]);
   const [branches, setBranches] = useState([]);
@@ -163,7 +164,7 @@ function UsersSection() {
   const [showForm, setShowForm] = useState(false);
   const [resetTarget, setResetTarget] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
-  const [form, setForm]       = useState({ loginId: "", password: "", role: "OWNER", orgId: "", branchId: "" });
+  const [form, setForm]       = useState({ loginId: "", password: "", role: "OWNER", orgId: selectedOrgId || "", branchId: "" });
   const [msg, setMsg]         = useState({ text: "", err: false });
 
   const load = useCallback(async () => {
@@ -177,9 +178,10 @@ function UsersSection() {
       setUsers(userData.users);
       setOrgs(orgData.orgs);
       setBranches(branchData.branches);
+      setForm((current) => current.orgId ? current : { ...current, orgId: selectedOrgId || "" });
     }
     finally { setLoading(false); }
-  }, []);
+  }, [selectedOrgId]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -188,7 +190,7 @@ function UsersSection() {
     try {
       await api("/api/superadmin/users", { method: "POST", body: JSON.stringify(form) });
       setMsg({ text: `User "${form.loginId}" created.`, err: false });
-      setForm({ loginId: "", password: "", role: "OWNER", orgId: "", branchId: "" });
+      setForm({ loginId: "", password: "", role: "OWNER", orgId: selectedOrgId || "", branchId: "" });
       setShowForm(false);
       load();
     } catch (err) { setMsg({ text: err.message, err: true }); }
@@ -289,7 +291,7 @@ function UsersSection() {
               </tr>
             </thead>
             <tbody>
-              {users.map(u => (
+              {users.filter((user) => !selectedOrgId || String(user.orgId) === selectedOrgId).map(u => (
                 <tr key={u._id} className="border-b border-black/5 hover:bg-gray-50">
                   <td className="py-2 pr-3 font-semibold">{u.loginId}</td>
                   <td className="py-2 pr-3"><Badge role={u.role} /></td>
@@ -317,7 +319,7 @@ function UsersSection() {
               ))}
             </tbody>
           </table>
-          {!users.length && <p className="py-6 text-center text-xs text-black/40">No users found.</p>}
+          {!users.some((user) => !selectedOrgId || String(user.orgId) === selectedOrgId) && <p className="py-6 text-center text-xs text-black/40">No users found for this restaurant.</p>}
         </div>
       )}
     </Card>
@@ -325,7 +327,7 @@ function UsersSection() {
 }
 
 // ─── Orgs Section ──────────────────────────────────────────────────────────
-function OrgsSection() {
+function OrgsSection({ selectedOrgId, onOrganizationsChanged }) {
   const [orgs, setOrgs]       = useState([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -348,7 +350,7 @@ function OrgsSection() {
       const result = await api("/api/superadmin/orgs", { method: "POST", body: JSON.stringify({ name }) });
       setOwnerCredentials({ organization: result.org.name, ...result.ownerCredentials });
       setMsg({ text: `Restaurant "${name}" created with an Owner account.`, err: false });
-      setName(""); setShowForm(false); load();
+      setName(""); setShowForm(false); load(); onOrganizationsChanged();
     } catch (err) { setMsg({ text: err.message, err: true }); }
   }
 
@@ -418,7 +420,7 @@ function OrgsSection() {
             </tr>
           </thead>
           <tbody>
-            {orgs.map(o => (
+            {orgs.filter((org) => !selectedOrgId || org._id === selectedOrgId).map(o => (
               <tr key={o._id} className="border-b border-black/5 hover:bg-gray-50">
                 <td className="py-2 pr-3 font-semibold">{o.name}</td>
                 <td className="py-2 pr-3 font-mono text-xs text-black/50 select-all">{o._id}</td>
@@ -433,17 +435,17 @@ function OrgsSection() {
           </tbody>
         </table>
       )}
-      {!loading && !orgs.length && <p className="py-6 text-center text-xs text-black/40">No organizations yet.</p>}
+      {!loading && !orgs.some((org) => !selectedOrgId || org._id === selectedOrgId) && <p className="py-6 text-center text-xs text-black/40">No restaurant selected or found.</p>}
     </Card>
   );
 }
 
 // ─── Branches Section ──────────────────────────────────────────────────────
-function BranchesSection() {
+function BranchesSection({ selectedOrgId, organizations }) {
   const [branches, setBranches] = useState([]);
   const [loading, setLoading]   = useState(true);
   const [showForm, setShowForm] = useState(false);
-  const [form, setForm]         = useState({ orgId: "", name: "", code: "", address: "" });
+  const [form, setForm]         = useState({ orgId: selectedOrgId || "", name: "", code: "", address: "" });
   const [msg, setMsg]           = useState({ text: "", err: false });
   const [deleteTarget, setDeleteTarget] = useState(null);
 
@@ -453,6 +455,10 @@ function BranchesSection() {
     finally { setLoading(false); }
   }, []);
 
+  useEffect(() => {
+    if (selectedOrgId) setForm((current) => ({ ...current, orgId: selectedOrgId }));
+  }, [selectedOrgId]);
+
   useEffect(() => { load(); }, [load]);
 
   async function createBranch(e) {
@@ -460,7 +466,7 @@ function BranchesSection() {
     try {
       await api("/api/superadmin/branches", { method: "POST", body: JSON.stringify(form) });
       setMsg({ text: `Branch "${form.name}" created.`, err: false });
-      setForm({ orgId: "", name: "", code: "", address: "" }); setShowForm(false); load();
+      setForm({ orgId: selectedOrgId || "", name: "", code: "", address: "" }); setShowForm(false); load();
     } catch (err) { setMsg({ text: err.message, err: true }); }
   }
 
@@ -494,7 +500,14 @@ function BranchesSection() {
 
       {showForm && (
         <form onSubmit={createBranch} className="mb-4 grid gap-3 rounded-xl border border-black/10 bg-gray-50 p-4 sm:grid-cols-2">
-          <Input label="Org ID (paste from Organizations above)" required value={form.orgId} onChange={e => setForm(f => ({ ...f, orgId: e.target.value }))} />
+          <label className="block text-xs font-semibold text-black/55">
+            Restaurant
+            <select required value={form.orgId} onChange={e => setForm(f => ({ ...f, orgId: e.target.value }))}
+              className="mt-1 w-full rounded-lg border border-black/10 bg-white px-3 py-2 text-sm outline-none focus:border-forest">
+              <option value="">Select restaurant…</option>
+              {organizations.map((org) => <option key={org._id} value={org._id}>{org.name}</option>)}
+            </select>
+          </label>
           <Input label="Branch Name" required value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} />
           <Input label="Branch Code (unique, e.g. MAIN)" required value={form.code} onChange={e => setForm(f => ({ ...f, code: e.target.value }))} />
           <Input label="Address (optional)" value={form.address} onChange={e => setForm(f => ({ ...f, address: e.target.value }))} />
@@ -518,7 +531,7 @@ function BranchesSection() {
             </tr>
           </thead>
           <tbody>
-            {branches.map(b => (
+            {branches.filter((branch) => !selectedOrgId || String(branch.orgId) === selectedOrgId).map(b => (
               <tr key={b._id} className="border-b border-black/5 hover:bg-gray-50">
                 <td className="py-2 pr-3 font-semibold">{b.name}</td>
                 <td className="py-2 pr-3 font-mono text-xs">{b.code}</td>
@@ -534,7 +547,155 @@ function BranchesSection() {
           </tbody>
         </table>
       )}
-      {!loading && !branches.length && <p className="py-6 text-center text-xs text-black/40">No branches yet.</p>}
+      {!loading && !branches.some((branch) => !selectedOrgId || String(branch.orgId) === selectedOrgId) && <p className="py-6 text-center text-xs text-black/40">No branches found for this restaurant.</p>}
+    </Card>
+  );
+}
+
+function WhatsAppAutomation({ organizations, selectedOrgId }) {
+  const [orgId, setOrgId] = useState(selectedOrgId || "");
+  const [branches, setBranches] = useState([]);
+  const [branchId, setBranchId] = useState("");
+  const [branchError, setBranchError] = useState("");
+  const [templateName, setTemplateName] = useState("");
+  const [language, setLanguage] = useState("en_US");
+  const [parameterText, setParameterText] = useState("");
+  const [recipientCount, setRecipientCount] = useState(null);
+  const [maxRecipients, setMaxRecipients] = useState(25);
+  const [providerConfigured, setProviderConfigured] = useState(false);
+  const [loadingPreview, setLoadingPreview] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [result, setResult] = useState(null);
+  const [message, setMessage] = useState({ text: "", err: false });
+
+  useEffect(() => {
+    setOrgId(selectedOrgId || "");
+    setBranchId("");
+  }, [selectedOrgId]);
+
+  useEffect(() => {
+    if (!orgId) {
+      setBranches([]);
+      setBranchId("");
+      return;
+    }
+    let active = true;
+    api("/api/superadmin/branches")
+      .then((data) => {
+        if (!active) return;
+        const organizationBranches = data.branches.filter((branch) => String(branch.orgId) === orgId);
+        setBranches(organizationBranches);
+        setBranchError("");
+      })
+      .catch((error) => { if (active) setBranchError(error.message); });
+    return () => { active = false; };
+  }, [orgId]);
+
+  useEffect(() => {
+    if (!orgId) {
+      setRecipientCount(null);
+      setProviderConfigured(false);
+      return;
+    }
+    let active = true;
+    setLoadingPreview(true);
+    setResult(null);
+    api(`/api/superadmin/whatsapp?orgId=${encodeURIComponent(orgId)}${branchId ? `&branchId=${encodeURIComponent(branchId)}` : ""}`)
+      .then((data) => {
+        if (!active) return;
+        setRecipientCount(data.recipientCount);
+        setMaxRecipients(data.maxRecipients);
+        setProviderConfigured(data.providerConfigured);
+      })
+      .catch((error) => {
+        if (active) {
+          setRecipientCount(null);
+          setMessage({ text: error.message, err: true });
+        }
+      })
+      .finally(() => { if (active) setLoadingPreview(false); });
+    return () => { active = false; };
+  }, [orgId, branchId]);
+
+  async function sendCampaign(event) {
+    event.preventDefault();
+    if (!orgId || recipientCount == null || recipientCount < 1 || recipientCount > maxRecipients) return;
+    setSending(true);
+    setMessage({ text: "", err: false });
+    setResult(null);
+    try {
+      const data = await api("/api/superadmin/whatsapp", {
+        method: "POST",
+        body: JSON.stringify({
+          orgId,
+          branchId,
+          templateName,
+          language,
+          parameters: parameterText.split(/\r?\n/).map((value) => value.trim()).filter(Boolean),
+        }),
+      });
+      setResult(data);
+      setMessage({ text: `Campaign complete: ${data.sent} sent, ${data.failed} failed.`, err: data.failed > 0 });
+    } catch (error) {
+      setMessage({ text: error.message, err: true });
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <Card title="WhatsApp automation message" icon={MessageCircle}>
+      <p className="mb-4 text-sm text-black/55">
+        Send an approved Meta WhatsApp template to customers who explicitly opted in. Branch campaigns only include opted-in customers with an order at that branch. Each send is manually initiated and limited to {maxRecipients} recipients.
+      </p>
+      <form onSubmit={sendCampaign} className="space-y-4">
+        <div className="grid gap-3 sm:grid-cols-2">
+          <label className="block text-xs font-semibold text-black/55">
+            Restaurant
+            <select required value={orgId} onChange={(event) => { setOrgId(event.target.value); setBranchId(""); }} className="mt-1 w-full rounded-lg border border-black/10 bg-white px-3 py-2 text-sm">
+              <option value="">Select restaurant…</option>
+              {organizations.map((organization) => <option key={organization._id} value={organization._id}>{organization.name}</option>)}
+            </select>
+          </label>
+          <label className="block text-xs font-semibold text-black/55">
+            Branch (optional)
+            <select disabled={!orgId} value={branchId} onChange={(event) => setBranchId(event.target.value)} className="mt-1 w-full rounded-lg border border-black/10 bg-white px-3 py-2 text-sm disabled:bg-gray-100">
+              <option value="">All restaurant customers</option>
+              {branches.map((branch) => <option key={branch._id} value={branch._id}>{branch.name} ({branch.code})</option>)}
+            </select>
+          </label>
+          <Input label="Approved template name" required value={templateName} onChange={(event) => setTemplateName(event.target.value)} placeholder="e.g. restaurant_greeting" pattern="[a-zA-Z0-9_]+" />
+          <Input label="Template language code" required value={language} onChange={(event) => setLanguage(event.target.value)} placeholder="en_US" pattern="[a-zA-Z]{2,3}(_[A-Z]{2})?" />
+        </div>
+        <label className="block text-xs font-semibold text-black/55">
+          Body parameters (one per line, in template order; optional)
+          <textarea value={parameterText} onChange={(event) => setParameterText(event.target.value)} rows={4} maxLength={10240} placeholder={"Hello {{name}}!\n{{branch}}"} className="mt-1 w-full rounded-lg border border-black/10 px-3 py-2 text-sm outline-none focus:border-forest" />
+          <span className="mt-1 block font-normal">Supported placeholders: {"{{name}}"}, {"{{phone}}"}, {"{{branch}}"}.</span>
+        </label>
+        <div className="rounded-xl bg-gray-50 p-4 text-sm">
+          <p className="font-semibold">Recipient preview</p>
+          <p className="mt-1 text-black/60">
+            {!orgId ? "Select a restaurant to preview recipients." : loadingPreview ? "Counting opted-in customers…" : recipientCount == null ? "Recipient count unavailable." : `${recipientCount} opted-in customer${recipientCount === 1 ? "" : "s"} selected.`}
+          </p>
+          {orgId && !loadingPreview && recipientCount > maxRecipients && <p className="mt-1 text-xs text-red-600">Reduce the audience by choosing a branch before sending.</p>}
+          {branchError && <p role="alert" className="mt-1 text-xs text-red-600">{branchError}</p>}
+          {!providerConfigured && <p className="mt-2 text-xs text-amber-800">Meta WhatsApp Cloud API is not configured on the server.</p>}
+        </div>
+        <Msg {...message} />
+        <Btn type="submit" disabled={sending || !providerConfigured || !orgId || !templateName.trim() || recipientCount == null || recipientCount < 1 || recipientCount > maxRecipients}>
+          <MessageCircle size={13} className="mr-1 inline" />{sending ? "Sending…" : `Send template${recipientCount ? ` to ${recipientCount}` : ""}`}
+        </Btn>
+      </form>
+      {result?.results?.some((entry) => !entry.success) && (
+        <div className="mt-4 rounded-xl border border-red-100 bg-red-50 p-4">
+          <h3 className="text-sm font-bold text-red-800">Failed deliveries</h3>
+          <ul className="mt-2 space-y-1 text-xs text-red-700">
+            {result.results.filter((entry) => !entry.success).map((entry, index) => (
+              <li key={`${entry.name}-${index}`}>{entry.name}: {entry.error}</li>
+            ))}
+          </ul>
+        </div>
+      )}
     </Card>
   );
 }
@@ -543,6 +704,10 @@ function BranchesSection() {
 export default function SuperAdminPage() {
   const [ready, setReady]       = useState(false);
   const [denied, setDenied]     = useState(false);
+  const [activeSection, setActiveSection] = useState("restaurants");
+  const [organizations, setOrganizations] = useState([]);
+  const [selectedOrgId, setSelectedOrgId] = useState("");
+  const [organizationError, setOrganizationError] = useState("");
 
   useEffect(() => {
     api("/api/session")
@@ -552,6 +717,20 @@ export default function SuperAdminPage() {
       })
       .catch(() => setDenied(true));
   }, []);
+
+  const loadOrganizations = useCallback(async () => {
+    try {
+      const data = await api("/api/superadmin/orgs");
+      setOrganizations(data.orgs);
+      setOrganizationError("");
+    } catch (error) {
+      setOrganizationError(error.message);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (ready) loadOrganizations();
+  }, [ready, loadOrganizations]);
 
   async function logout() {
     await fetch("/api/auth/logout", { method: "POST" });
@@ -604,9 +783,36 @@ export default function SuperAdminPage() {
           <ShieldCheck size={14} className="mr-1 inline" />
           Signed in as <strong>SUPERADMIN</strong> — register restaurants, manage branches, and create user accounts below.
         </div>
-        <OrgsSection />
-        <BranchesSection />
-        <UsersSection />
+        <nav aria-label="Superadmin navigation" className="flex flex-wrap gap-2 rounded-2xl border border-black/10 bg-white p-3 shadow-sm">
+          {[
+            ["restaurants", "Restaurants"],
+            ["branches", "Branches"],
+            ["users", "Users"],
+            ["whatsapp", "WhatsApp automation"],
+          ].map(([section, title]) => (
+            <button key={section} type="button" onClick={() => setActiveSection(section)} aria-current={activeSection === section ? "page" : undefined}
+              className={`rounded-lg px-3 py-2 text-sm font-semibold ${activeSection === section ? "bg-[#e7f2eb] text-forest" : "hover:bg-gray-50"}`}>
+              {title}
+            </button>
+          ))}
+        </nav>
+        <div className="rounded-2xl border border-black/10 bg-white p-4 shadow-sm">
+          <label className="block max-w-md text-xs font-semibold text-black/55">
+            Filter by restaurant
+            <select value={selectedOrgId} onChange={(event) => setSelectedOrgId(event.target.value)}
+              className="mt-1 w-full rounded-lg border border-black/10 bg-white px-3 py-2 text-sm text-black outline-none focus:border-forest">
+              <option value="">All restaurants</option>
+              {organizations.map((organization) => (
+                <option key={organization._id} value={organization._id}>{organization.name}</option>
+              ))}
+            </select>
+          </label>
+          {organizationError && <p role="alert" className="mt-2 text-xs text-red-600">{organizationError}</p>}
+        </div>
+        {activeSection === "restaurants" && <OrgsSection selectedOrgId={selectedOrgId} onOrganizationsChanged={loadOrganizations} />}
+        {activeSection === "branches" && <BranchesSection selectedOrgId={selectedOrgId} organizations={organizations} />}
+        {activeSection === "users" && <UsersSection selectedOrgId={selectedOrgId} />}
+        {activeSection === "whatsapp" && <WhatsAppAutomation organizations={organizations} selectedOrgId={selectedOrgId} />}
       </main>
     </div>
   );

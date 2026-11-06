@@ -191,18 +191,27 @@ function Orders() {
   );
 }
 
-function PaymentSettings() {
+function PaymentSettings({ branches, branchId }) {
   const [settings, setSettings] = useState({ upiId: "", upiPayerName: "", upiCurrency: "INR" });
   const [message, setMessage] = useState({ text: "", err: false });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    api("/api/owner/payment-settings")
-      .then((data) => setSettings(data.paymentSettings))
-      .catch((error) => setMessage({ text: error.message, err: true }))
-      .finally(() => setLoading(false));
-  }, []);
+    if (!branchId) {
+      setLoading(false);
+      setSettings({ upiId: "", upiPayerName: "", upiCurrency: "INR" });
+      return;
+    }
+    let active = true;
+    setLoading(true);
+    setMessage({ text: "", err: false });
+    api(`/api/owner/payment-settings?branchId=${encodeURIComponent(branchId)}`)
+      .then((data) => { if (active) setSettings(data.paymentSettings); })
+      .catch((error) => { if (active) setMessage({ text: error.message, err: true }); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [branchId]);
 
   async function save(event) {
     event.preventDefault();
@@ -211,10 +220,10 @@ function PaymentSettings() {
     try {
       const data = await api("/api/owner/payment-settings", {
         method: "PATCH",
-        body: JSON.stringify(settings),
+        body: JSON.stringify({ ...settings, branchId }),
       });
       setSettings(data.paymentSettings);
-      setMessage({ text: data.paymentSettings.upiId ? "UPI payment details saved." : "UPI payment QR disabled.", err: false });
+      setMessage({ text: data.paymentSettings.upiId ? "Branch UPI payment details saved." : "UPI payment QR disabled for this branch.", err: false });
     } catch (error) {
       setMessage({ text: error.message, err: true });
     } finally {
@@ -224,9 +233,12 @@ function PaymentSettings() {
 
   return (
     <Card title="Customer UPI payment QR" icon={CreditCard}>
+      {!branches.length
+        ? <p className="mb-3 text-sm text-black/50">Create a branch before configuring UPI payment details.</p>
+        : !branchId && <p className="mb-3 text-sm text-black/50">Select a branch from the Owner navigation to view or edit its UPI details.</p>}
       <form onSubmit={save} className="grid gap-3 sm:grid-cols-3">
-        <Inp label="UPI ID" autoComplete="off" placeholder="payments@example" value={settings.upiId} onChange={(event) => setSettings({ ...settings, upiId: event.target.value })} />
-        <Inp label="UPI payer name" autoComplete="name" placeholder="Restaurant name" value={settings.upiPayerName} onChange={(event) => setSettings({ ...settings, upiPayerName: event.target.value })} />
+        <Inp disabled={!branchId} label="UPI ID" autoComplete="off" placeholder="payments@example" value={settings.upiId} onChange={(event) => setSettings({ ...settings, upiId: event.target.value })} />
+        <Inp disabled={!branchId} label="UPI payer name" autoComplete="name" placeholder="Restaurant name" value={settings.upiPayerName} onChange={(event) => setSettings({ ...settings, upiPayerName: event.target.value })} />
         <label className="block text-xs font-semibold text-black/55">
           UPI amount currency
           <select disabled className="mt-1 w-full rounded-lg border border-black/10 bg-gray-100 px-3 py-2 text-sm text-black">
@@ -235,7 +247,7 @@ function PaymentSettings() {
         </label>
         <p className="text-xs text-black/45 sm:col-span-2">When configured, bills include a payment QR for the exact order total. Clear both UPI fields to disable QR payments.</p>
         <div className="flex items-end sm:justify-end">
-          <Btn type="submit" disabled={saving || loading}><Save size={14} />{saving ? "Saving…" : "Save UPI details"}</Btn>
+          <Btn type="submit" disabled={saving || loading || !branchId}><Save size={14} />{saving ? "Saving…" : "Save UPI details"}</Btn>
         </div>
       </form>
       <Msg {...message} />
@@ -244,7 +256,7 @@ function PaymentSettings() {
 }
 
 // ── Menu Tab (Categories + Products) ──────────────────────────────────────
-function MenuTab({ branches }) {
+function MenuTab({ branches, branchId }) {
   const [categories, setCategories] = useState([]);
   const [products,   setProducts]   = useState([]);
   const [catMsg,  setCatMsg]  = useState({ text: "", err: false });
@@ -258,6 +270,7 @@ function MenuTab({ branches }) {
   const [addingStandardCategories, setAddingStandardCategories] = useState(false);
   const [showProdForm, setShowProdForm] = useState(false);
   const [editProd, setEditProd] = useState(null);
+  const [editCategory, setEditCategory] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
 
   const loadCats  = useCallback(async () => {
@@ -268,35 +281,69 @@ function MenuTab({ branches }) {
   }, []);
 
   useEffect(() => { loadCats(); loadProds(); }, [loadCats, loadProds]);
+  useEffect(() => {
+    const targetBranchId = branchId || branches[0]?._id || "";
+    setCatForm((form) => ({ ...form, branchId: targetBranchId, parentCategoryId: "" }));
+    setProdForm((form) => ({ ...form, branchId: targetBranchId, categoryId: "" }));
+    setStandardBranchId(targetBranchId);
+  }, [branchId, branches]);
+
+  const getCategoryPath = (category) => {
+    const path = [category.name];
+    let parentId = category.parentCategoryId?._id ?? category.parentCategoryId;
+    while (parentId) {
+      const parent = categories.find((entry) => entry._id === String(parentId));
+      if (!parent) break;
+      path.unshift(parent.name);
+      parentId = parent.parentCategoryId?._id ?? parent.parentCategoryId;
+    }
+    return path.join(" / ");
+  };
+  const visibleCategories = categories.filter((category) =>
+    !branchId || String(category.branchId?._id ?? category.branchId) === branchId,
+  );
+  const categoryRows = branchId
+    ? visibleCategories
+    : [...visibleCategories.reduce((groups, category) => {
+      const key = getCategoryPath(category).toLowerCase();
+      const group = groups.get(key) || [];
+      group.push(category);
+      groups.set(key, group);
+      return groups;
+    }, new Map()).values()].map((group) => ({
+      ...group[0],
+      sharedBranchCount: new Set(group.map((category) => String(category.branchId?._id ?? category.branchId))).size,
+    }));
 
   // ── categories ──
   async function createCat(e) {
     e.preventDefault();
     try {
-      await api("/api/owner/categories", { method: "POST", body: JSON.stringify({ ...catForm, parentCategoryId: catForm.parentCategoryId || null }) });
+      const selectedParent = categories.find((category) => category._id === catForm.parentCategoryId);
+      const sourceBranchId = branchId || String(selectedParent?.branchId?._id ?? selectedParent?.branchId ?? branches[0]?._id ?? "");
+      await api("/api/owner/categories", { method: "POST", body: JSON.stringify({ ...catForm, branchId: sourceBranchId, parentCategoryId: catForm.parentCategoryId || null, syncAll: !branchId }) });
       setCatMsg({ text: `Category "${catForm.name}" created.`, err: false });
-      setCatForm({ branchId: "", name: "", parentCategoryId: "" }); setShowCatForm(false); loadCats();
+      setCatForm({ branchId: branchId || branches[0]?._id || "", name: "", parentCategoryId: "" }); setShowCatForm(false); loadCats();
     } catch (err) { setCatMsg({ text: err.message, err: true }); }
   }
   async function addStandardCategories() {
     if (!standardBranchId || addingStandardCategories) return;
     setAddingStandardCategories(true);
     setCatMsg({ text: "", err: false });
+    const targetBranchId = branchId || branches[0]?._id;
     const branchCategories = categories.filter((category) =>
-      String(category.branchId?._id ?? category.branchId) === standardBranchId,
+      String(category.branchId?._id ?? category.branchId) === targetBranchId,
     );
     const findCategory = (name, parentId = null) => branchCategories.find((category) =>
       category.name.trim().toLowerCase() === name.toLowerCase() &&
       String(category.parentCategoryId?._id ?? category.parentCategoryId ?? "") === (parentId || ""),
     );
     const createCategory = async (name, parentCategoryId = null) => {
-      const existing = findCategory(name, parentCategoryId);
-      if (existing) return String(existing._id);
       const { category } = await api("/api/owner/categories", {
         method: "POST",
-        body: JSON.stringify({ branchId: standardBranchId, name, parentCategoryId }),
+        body: JSON.stringify({ branchId: targetBranchId, name, parentCategoryId, syncAll: !branchId }),
       });
-      branchCategories.push(category);
+      if (!findCategory(name, parentCategoryId)) branchCategories.push(category);
       return String(category._id);
     };
 
@@ -315,39 +362,75 @@ function MenuTab({ branches }) {
     }
   }
   // ── products ──
-  const filteredCats = categories.filter(c => !prodForm.branchId || String(c.branchId?._id ?? c.branchId) === prodForm.branchId);
-  const visibleProducts = products.filter((product) => {
+  const filteredCats = branchId
+    ? categories.filter((category) => String(category.branchId?._id ?? category.branchId) === branchId)
+    : categoryRows;
+  const matchingProducts = products.filter((product) => {
+    if (branchId && String(product.branchId?._id ?? product.branchId) !== branchId) return false;
     const category = categories.find((item) => item._id === product.categoryId?.toString());
-    const categoryName = category ? `${category.parentCategoryId?.name || ""} ${category.name}` : "";
+    const categoryName = category ? getCategoryPath(category) : "";
     return `${product.name} ${categoryName} ${product.branchId?.name || ""}`
       .toLowerCase()
       .includes(productSearch.trim().toLowerCase());
   });
+  const visibleProducts = branchId
+    ? matchingProducts
+    : [...matchingProducts.reduce((groups, product) => {
+      const category = categories.find((item) => item._id === product.categoryId?.toString());
+      const key = `${category ? getCategoryPath(category).toLowerCase() : ""}|${product.name.trim().toLowerCase()}`;
+      const group = groups.get(key) || [];
+      group.push(product);
+      groups.set(key, group);
+      return groups;
+    }, new Map()).values()].map((group) => ({
+      ...group[0],
+      sharedPrices: [...new Set(group.map((product) => product.price))],
+      sharedCosts: [...new Set(group.map((product) => product.costPrice ?? null))],
+      sharedBranchCount: new Set(group.map((product) => String(product.branchId?._id ?? product.branchId))).size,
+    }));
 
   async function createProd(e) {
     e.preventDefault();
     try {
-      await api("/api/owner/products", { method: "POST", body: JSON.stringify({ ...prodForm, price: Number(prodForm.price), costPrice: prodForm.costPrice === "" ? null : Number(prodForm.costPrice) }) });
+      const selectedCategory = categories.find((category) => category._id === prodForm.categoryId);
+      const sourceBranchId = branchId || String(selectedCategory?.branchId?._id ?? selectedCategory?.branchId ?? branches[0]?._id ?? "");
+      await api("/api/owner/products", { method: "POST", body: JSON.stringify({ ...prodForm, branchId: sourceBranchId, price: Number(prodForm.price), costPrice: branchId && prodForm.costPrice !== "" ? Number(prodForm.costPrice) : null, syncAll: !branchId }) });
       setProdMsg({ text: `"${prodForm.name}" added to menu.`, err: false });
-      setProdForm({ branchId: "", categoryId: "", name: "", price: "", costPrice: "" }); setShowProdForm(false); loadProds();
+      setProdForm({ branchId: branchId || branches[0]?._id || "", categoryId: "", name: "", price: "", costPrice: "" }); setShowProdForm(false); loadCats(); loadProds();
     } catch (err) { setProdMsg({ text: err.message, err: true }); }
   }
   async function saveEdit() {
     if (!editProd) return;
     try {
-      await api(`/api/owner/products/${editProd._id}`, { method: "PATCH", body: JSON.stringify({ name: editProd.name, price: Number(editProd.price), costPrice: editProd.costPrice === "" ? null : Number(editProd.costPrice) }) });
+      const update = { name: editProd.name, price: Number(editProd.price), syncAll: !branchId };
+      if (branchId) update.costPrice = editProd.costPrice === "" ? null : Number(editProd.costPrice);
+      await api(`/api/owner/products/${editProd._id}`, { method: "PATCH", body: JSON.stringify(update) });
       setProdMsg({ text: "Item updated.", err: false }); setEditProd(null); loadProds();
     } catch (err) { setProdMsg({ text: err.message, err: true }); }
   }
+  async function saveCategoryEdit() {
+    if (!editCategory) return;
+    try {
+      await api(`/api/owner/categories/${editCategory._id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ name: editCategory.name, syncAll: !branchId }),
+      });
+      setCatMsg({ text: "Category updated.", err: false });
+      setEditCategory(null);
+      loadCats();
+    } catch (err) {
+      setCatMsg({ text: err.message, err: true });
+    }
+  }
   async function toggleAvail(p) {
-    try { await api(`/api/owner/products/${p._id}`, { method: "PATCH", body: JSON.stringify({ isAvailable: !p.isAvailable }) }); loadProds(); }
+    try { await api(`/api/owner/products/${p._id}`, { method: "PATCH", body: JSON.stringify({ isAvailable: !p.isAvailable, syncAll: !branchId }) }); loadProds(); }
     catch (err) { setProdMsg({ text: err.message, err: true }); }
   }
   async function confirmDelete() {
     if (!deleteTarget) return;
     const { type, id, name } = deleteTarget;
     try {
-      await api(`/api/owner/${type === "category" ? "categories" : "products"}/${id}`, { method: "DELETE" });
+      await api(`/api/owner/${type === "category" ? "categories" : "products"}/${id}${branchId ? "" : "?syncAll=true"}`, { method: "DELETE" });
       setDeleteTarget(null);
       if (type === "category") loadCats();
       else loadProds();
@@ -365,10 +448,13 @@ function MenuTab({ branches }) {
       <Card title="Menu Categories" icon={BookOpen}
         action={<div className="flex flex-wrap gap-2">
           <Btn variant="secondary" size="sm" disabled={!branches.length} onClick={() => {
-            setStandardBranchId((current) => current || branches[0]?._id || "");
+            setStandardBranchId(branchId || branches[0]?._id || "");
             setShowStandardCategories((current) => !current);
           }}>Standard Sections</Btn>
-          <Btn size="sm" onClick={() => setShowCatForm(o => !o)}><Plus size={12} />{showCatForm ? "Cancel" : "Add Category"}</Btn>
+          <Btn size="sm" onClick={() => {
+            setCatForm((form) => ({ ...form, branchId: branchId || branches[0]?._id || form.branchId }));
+            setShowCatForm((open) => !open);
+          }}><Plus size={12} />{showCatForm ? "Cancel" : "Add Category"}</Btn>
         </div>}>
         {showStandardCategories && (
           <div className="mb-4 flex flex-wrap items-end gap-3 rounded-xl border border-black/10 bg-gray-50 p-4">
@@ -384,15 +470,15 @@ function MenuTab({ branches }) {
         )}
         {showCatForm && (
           <form onSubmit={createCat} className="mb-4 grid gap-3 rounded-xl border border-black/10 bg-gray-50 p-4 sm:grid-cols-4">
-            <Sel label="Branch" required value={catForm.branchId} onChange={e => setCatForm(f => ({ ...f, branchId: e.target.value, parentCategoryId: "" }))}>
-              <option value="">Select branch…</option>
-              {branches.map(b => <option key={b._id} value={b._id}>{b.name}</option>)}
-            </Sel>
+            <p className="self-end pb-2 text-sm font-semibold text-forest">
+              {branchId ? branches.find((branch) => branch._id === branchId)?.name : "Shared across all branches"}
+            </p>
             <Sel label="Parent category" value={catForm.parentCategoryId} onChange={e => setCatForm(f => ({ ...f, parentCategoryId: e.target.value }))}>
               <option value="">Top-level category</option>
-              {categories.filter((category) =>
-                String(category.branchId?._id ?? category.branchId) === catForm.branchId && !category.parentCategoryId,
-              ).map(category => <option key={category._id} value={category._id}>{category.name}</option>)}
+              {(branchId ? categories.filter((category) =>
+                String(category.branchId?._id ?? category.branchId) === branchId && !category.parentCategoryId,
+              ) : categoryRows.filter((category) => !category.parentCategoryId))
+                .map(category => <option key={category._id} value={category._id}>{category.name}</option>)}
             </Sel>
             <Inp label="Category Name" required value={catForm.name} onChange={e => setCatForm(f => ({ ...f, name: e.target.value }))} />
             <div className="flex items-end">
@@ -405,10 +491,21 @@ function MenuTab({ branches }) {
           ? <p className="py-4 text-center text-xs text-black/40">No categories yet. Add one to start building your menu.</p>
           : (
             <div className="mt-1 flex flex-wrap gap-2">
-              {categories.map(c => (
+              {categoryRows.map(c => (
                 <div key={c._id} className="flex items-center gap-1.5 rounded-full border border-black/10 bg-gray-50 px-3 py-1 text-sm">
-                  <span className="font-medium">{c.name}</span>
-                  <span className="text-xs text-black/40">· {c.branchId?.name}</span>
+                  {editCategory?._id === c._id ? (
+                    <>
+                      <input aria-label="Category name" value={editCategory.name} onChange={(event) => setEditCategory({ ...editCategory, name: event.target.value })} className="w-32 rounded border border-black/10 px-2 py-1 text-xs" />
+                      <button type="button" onClick={saveCategoryEdit} className="text-xs font-semibold text-forest">Save</button>
+                      <button type="button" onClick={() => setEditCategory(null)} className="text-xs text-black/50">Cancel</button>
+                    </>
+                  ) : (
+                    <>
+                      <span className="font-medium">{c.name}</span>
+                      <button type="button" onClick={() => setEditCategory({ _id: c._id, name: c.name })} className="text-xs font-semibold text-forest">Edit</button>
+                    </>
+                  )}
+                  <span className="text-xs text-black/40">· {branchId ? c.branchId?.name : `${c.sharedBranchCount}/${branches.length} branches`}</span>
                   <button onClick={() => setDeleteTarget({ type: "category", id: c._id, name: c.name })} className="ml-1 text-red-400 hover:text-red-600"><Trash2 size={12} /></button>
                 </div>
               ))}
@@ -418,27 +515,32 @@ function MenuTab({ branches }) {
 
       {/* ── Products ── */}
       <Card title="Menu Items" icon={Utensils}
-        action={<Btn size="sm" onClick={() => setShowProdForm(o => !o)}><Plus size={12} />{showProdForm ? "Cancel" : "Add Item"}</Btn>}>
+        action={        <Btn size="sm" onClick={() => {
+          setProdForm((form) => ({ ...form, branchId: branchId || branches[0]?._id || form.branchId }));
+          setShowProdForm((open) => !open);
+        }}><Plus size={12} />{showProdForm ? "Cancel" : "Add Item"}</Btn>}>
         {showProdForm && (
           <form onSubmit={createProd} className="mb-4 grid gap-3 rounded-xl border border-black/10 bg-gray-50 p-4 sm:grid-cols-2 lg:grid-cols-5">
-            <Sel label="Branch" required value={prodForm.branchId} onChange={e => setProdForm(f => ({ ...f, branchId: e.target.value, categoryId: "" }))}>
-              <option value="">Select branch…</option>
-              {branches.map(b => <option key={b._id} value={b._id}>{b.name}</option>)}
-            </Sel>
+            <p className="self-end pb-2 text-sm font-semibold text-forest">
+              {branchId ? branches.find((branch) => branch._id === branchId)?.name : "Shared across all branches"}
+            </p>
             <Sel label="Category" required value={prodForm.categoryId} onChange={e => setProdForm(f => ({ ...f, categoryId: e.target.value }))}>
               <option value="">Select category…</option>
               {filteredCats.map(c => <option key={c._id} value={c._id}>{c.name}</option>)}
             </Sel>
             <Inp label="Item Name" required value={prodForm.name} onChange={e => setProdForm(f => ({ ...f, name: e.target.value }))} />
             <Inp label="Price (₹)" type="number" min="0" step="0.5" required value={prodForm.price} onChange={e => setProdForm(f => ({ ...f, price: e.target.value }))} />
-            <Inp label="Cost price (₹)" type="number" min="0" step="0.01" value={prodForm.costPrice} onChange={e => setProdForm(f => ({ ...f, costPrice: e.target.value }))} />
+            {branchId
+              ? <Inp label="Cost price (₹)" type="number" min="0" step="0.01" value={prodForm.costPrice} onChange={e => setProdForm(f => ({ ...f, costPrice: e.target.value }))} />
+              : <p className="self-end pb-2 text-xs text-black/45">Set cost prices per branch after adding.</p>}
             <div className="sm:col-span-2 lg:col-span-5 flex justify-end">
               <Btn size="sm" type="submit">Add to Menu</Btn>
             </div>
           </form>
         )}
         <Msg {...prodMsg} />
-        <input aria-label="Search menu items" type="search" value={productSearch} onChange={(event) => setProductSearch(event.target.value)} placeholder="Search items, categories, or branches…" className="mb-3 w-full rounded-lg border border-black/10 px-3 py-2 text-sm sm:max-w-md" />
+        {!branchId && <p className="mb-3 rounded-lg bg-[#e7f2eb] p-3 text-xs text-green-900">Matching items are shown once. New items/categories and edits, availability changes, or deletions apply across branches; editing an item also adds missing branch copies. Cost prices remain branch-specific.</p>}
+        <Inp label="Search menu items" type="search" value={productSearch} onChange={(event) => setProductSearch(event.target.value)} placeholder="Search item or category…" />
 
         {products.length === 0
           ? <p className="py-4 text-center text-xs text-black/40">No menu items yet. Add a category first, then add items.</p>
@@ -450,7 +552,7 @@ function MenuTab({ branches }) {
                     <th className="pb-2 pr-3">Item Name</th>
                     <th className="pb-2 pr-3">Price</th>
                     <th className="pb-2 pr-3">Cost</th>
-                    <th className="pb-2 pr-3">Branch</th>
+                    <th className="pb-2 pr-3">{branchId ? "Branch" : "Branches"}</th>
                     <th className="pb-2 pr-3">Status</th>
                     <th className="pb-2 text-right">Actions</th>
                   </tr>
@@ -468,10 +570,12 @@ function MenuTab({ branches }) {
                             className="w-24 rounded border border-black/10 px-2 py-1 text-sm outline-none focus:border-forest" />
                         </td>
                         <td className="py-2 pr-3">
+                          {branchId ? (
                           <input aria-label="Cost price" type="number" min="0" step="0.01" value={editProd.costPrice} onChange={e => setEditProd(d => ({ ...d, costPrice: e.target.value }))}
                             className="w-24 rounded border border-black/10 px-2 py-1 text-sm outline-none focus:border-forest" />
+                          ) : <span className="text-xs text-black/45">Set per branch</span>}
                         </td>
-                        <td className="py-2 pr-3 text-xs text-black/40">{p.branchId?.name}</td>
+                        <td className="py-2 pr-3 text-xs text-black/40">{branchId ? p.branchId?.name : `All ${branches.length} branches`}</td>
                         <td className="py-2 pr-3"></td>
                         <td className="py-2 text-right">
                           <div className="flex items-center justify-end gap-1">
@@ -483,9 +587,9 @@ function MenuTab({ branches }) {
                     ) : (
                       <tr key={p._id} className="border-b border-black/5 hover:bg-gray-50">
                         <td className="py-2 pr-3 font-semibold">{p.name}</td>
-                        <td className="py-2 pr-3">{money(p.price)}</td>
-                        <td className="py-2 pr-3">{p.costPrice == null ? "—" : money(p.costPrice)}</td>
-                        <td className="py-2 pr-3 text-xs text-black/50">{p.branchId?.name}</td>
+                        <td className="py-2 pr-3">{!branchId && p.sharedPrices?.length > 1 ? "Varies" : money(p.price)}</td>
+                        <td className="py-2 pr-3">{!branchId && p.sharedCosts?.length > 1 ? "Varies" : p.costPrice == null ? "—" : money(p.costPrice)}</td>
+                        <td className="py-2 pr-3 text-xs text-black/50">{branchId ? p.branchId?.name : `${p.sharedBranchCount}/${branches.length} branches`}</td>
                         <td className="py-2 pr-3">
                           <button onClick={() => toggleAvail(p)}
                             className={`rounded-full px-2 py-0.5 text-xs font-semibold transition ${p.isAvailable ? "bg-green-100 text-green-700 hover:bg-green-200" : "bg-gray-100 text-gray-500 hover:bg-gray-200"}`}>
@@ -512,8 +616,8 @@ function MenuTab({ branches }) {
       <ConfirmDialog
         title={`Delete ${deleteTarget.type === "category" ? "category" : "menu item"}?`}
         message={deleteTarget.type === "category"
-          ? `Delete category "${deleteTarget.name}"? Products in it won't be deleted.`
-          : `Delete "${deleteTarget.name}" from menu?`}
+          ? `Delete category "${deleteTarget.name}"${branchId ? "" : " from every branch"}? Products in it won't be deleted.`
+          : `Delete "${deleteTarget.name}"${branchId ? "" : " from every branch"}?`}
         onCancel={() => setDeleteTarget(null)}
         onConfirm={confirmDelete}
       />
@@ -641,7 +745,7 @@ function StaffTab({ branches }) {
   );
 }
 
-function CostPriceSettings() {
+function CostPriceSettings({ branchId }) {
   const [products, setProducts] = useState([]);
   const [search, setSearch] = useState("");
   const [editing, setEditing] = useState({});
@@ -660,6 +764,7 @@ function CostPriceSettings() {
 
   useEffect(() => { load(); }, [load]);
   const visibleProducts = products.filter((product) =>
+    (!branchId || String(product.branchId?._id ?? product.branchId) === branchId) &&
     `${product.name} ${product.branchId?.name || ""}`.toLowerCase().includes(search.trim().toLowerCase()),
   );
 
@@ -681,7 +786,7 @@ function CostPriceSettings() {
     <Card title="Menu item cost prices" icon={Utensils}>
       <p className="mb-3 text-xs text-black/50">Discounts are limited by each item’s cost price. Set accurate costs here; items without a cost price cannot be discounted.</p>
       <Msg {...message} />
-    <input aria-label="Search menu item cost prices" type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search items or branches…" className="mb-3 w-full rounded-lg border border-black/10 px-3 py-2 text-sm sm:max-w-sm" />
+      <Inp label="Search menu item cost prices" type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search item name…" />
     {loading ? <p className="py-5 text-center text-sm text-black/45">Loading menu costs…</p> : (
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -812,6 +917,7 @@ export default function OwnerPage() {
   );
 
   const summary = analytics?.summary || {};
+  const selectedBranch = branches.find((branch) => branch._id === branchId);
 
   return (
     <div className="min-h-screen bg-[#f5f5f0]">
@@ -826,9 +932,21 @@ export default function OwnerPage() {
           </div>
         </div>
         <nav aria-label="Owner navigation" className="flex flex-wrap items-center gap-2">
+          <label className="text-xs font-semibold text-black/55">
+            Branch
+            <select value={branchId} onChange={(event) => setBranchId(event.target.value)}
+              className="ml-2 rounded-lg border border-black/10 bg-white px-3 py-2 text-sm text-black">
+              <option value="">All branches</option>
+              {branches.map((branch) => <option key={branch._id} value={branch._id}>{branch.name} ({branch.code})</option>)}
+            </select>
+          </label>
           <button type="button" onClick={() => setActivePage("dashboard")} aria-current={activePage === "dashboard" ? "page" : undefined}
             className={`rounded-lg px-3 py-2 text-sm font-semibold ${activePage === "dashboard" ? "bg-[#e7f2eb] text-forest" : "hover:bg-gray-50"}`}>
             Dashboard
+          </button>
+          <button type="button" onClick={() => setActivePage("menu-items")} aria-current={activePage === "menu-items" ? "page" : undefined}
+            className={`rounded-lg px-3 py-2 text-sm font-semibold ${activePage === "menu-items" ? "bg-[#e7f2eb] text-forest" : "hover:bg-gray-50"}`}>
+            Menu items
           </button>
           <button type="button" onClick={() => setActivePage("payment-settings")} aria-current={activePage === "payment-settings" ? "page" : undefined}
             className={`rounded-lg px-3 py-2 text-sm font-semibold ${activePage === "payment-settings" ? "bg-[#e7f2eb] text-forest" : "hover:bg-gray-50"}`}>
@@ -846,22 +964,14 @@ export default function OwnerPage() {
       </header>
 
       <main className="mx-auto max-w-6xl space-y-5 p-5">
-        {activePage === "payment-settings" ? <PaymentSettings /> : activePage === "cost-prices" ? <CostPriceSettings /> : (
+        {activePage === "payment-settings" ? <PaymentSettings branches={branches} branchId={branchId} /> : activePage === "cost-prices" ? <CostPriceSettings branchId={branchId} /> : activePage === "menu-items" ? <MenuTab branches={branches} branchId={branchId} /> : (
           <>
         <section className="flex flex-wrap items-end justify-between gap-3 rounded-2xl border border-black/10 bg-white p-5 shadow-sm">
           <div>
             <p className="text-xs font-bold uppercase tracking-wider text-forest">ERP overview</p>
-            <h2 className="mt-1 text-xl font-bold">All branch performance</h2>
+            <h2 className="mt-1 text-xl font-bold">{selectedBranch ? `${selectedBranch.name} performance` : "All branch performance"}</h2>
             <p className="mt-1 text-sm text-black/50">View sales, orders, and menu coverage. Branch operations are managed by Branch Managers.</p>
           </div>
-          <label className="min-w-52 text-xs font-semibold text-black/55">
-            Branch
-            <select value={branchId} onChange={event => setBranchId(event.target.value)}
-              className="mt-1 w-full rounded-lg border border-black/10 bg-white px-3 py-2 text-sm text-black">
-              <option value="">All branches</option>
-              {branches.map(branch => <option key={branch._id} value={branch._id}>{branch.name} ({branch.code})</option>)}
-            </select>
-          </label>
         </section>
 
         {error && <p role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</p>}

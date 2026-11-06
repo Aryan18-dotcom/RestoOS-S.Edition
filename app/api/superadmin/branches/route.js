@@ -2,6 +2,9 @@ import { NextResponse } from "next/server";
 import connectToDatabase from "@/lib/db";
 import { getSession } from "@/lib/auth";
 import Branch from "@/models/Branch";
+import Category from "@/models/Category";
+import Product from "@/models/Product";
+import { copyOrganizationMenuToBranch } from "@/lib/shared-menu";
 
 async function requireSuperAdmin() {
   const session = await getSession();
@@ -34,6 +37,16 @@ export async function POST(request) {
       code: code.trim().toUpperCase(),
       address: address || "",
     });
+    try {
+      await copyOrganizationMenuToBranch(orgId, branch._id);
+    } catch (error) {
+      await Promise.all([
+        Product.deleteMany({ branchId: branch._id }),
+        Category.deleteMany({ branchId: branch._id }),
+      ]);
+      await Branch.deleteOne({ _id: branch._id });
+      throw error;
+    }
     return NextResponse.json({ branch }, { status: 201 });
   } catch (err) {
     if (err.message === "UNAUTHORIZED")

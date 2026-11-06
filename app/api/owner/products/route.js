@@ -5,6 +5,7 @@ import Product from "@/models/Product";
 import Branch from "@/models/Branch";
 import Category from "@/models/Category";
 import { isBranchManagerRole } from "@/lib/roles";
+import { ensureCategoryForPath, getCategoryPath, getOrgBranchIds } from "@/lib/shared-menu";
 
 async function menuSession() {
   const session = await getSession();
@@ -37,7 +38,7 @@ export async function GET() {
 export async function POST(request) {
   try {
     const session = await menuSession();
-    const { branchId, categoryId, name, price, costPrice } = await request.json();
+    const { branchId, categoryId, name, price, costPrice, syncAll } = await request.json();
     if (!branchId || !categoryId || !name || price == null)
       return NextResponse.json({ error: "branchId, categoryId, name and price required" }, { status: 400 });
     await connectToDatabase();
@@ -61,6 +62,44 @@ export async function POST(request) {
       if (!Number.isFinite(numericCost) || numericCost < 0 || numericCost > numericPrice) {
         return NextResponse.json({ error: "Cost price must be between zero and the menu price" }, { status: 400 });
       }
+    }
+    if (syncAll && session.role === "OWNER") {
+      const categoryPath = await getCategoryPath(categoryId);
+      const branchIds = await getOrgBranchIds(session.orgId);
+      const targetCategories = [];
+      for (const targetBranchId of branchIds) {
+        targetCategories.push(await ensureCategoryForPath(targetBranchId, categoryPath));
+      }
+      const existingByCategory = [];
+      for (const targetCategory of targetCategories) {
+        const matchingProducts = await Product.find({
+          branchId: targetCategory.branchId,
+          categoryId: targetCategory._id,
+        }).lean();
+        const existing = matchingProducts.find((item) => item.name.trim().toLowerCase() === name.trim().toLowerCase());
+        if (existing && existing.costPrice != null && existing.costPrice > numericPrice) {
+          return NextResponse.json({ error: `Price for ${existing.name} cannot be lower than its cost price in one of the branches.` }, { status: 400 });
+        }
+        existingByCategory.push(existing || null);
+      }
+      let sourceProduct = null;
+      for (let index = 0; index < branchIds.length; index += 1) {
+        const targetBranchId = branchIds[index];
+        const targetCategory = targetCategories[index];
+        const existing = existingByCategory[index];
+        const product = existing
+          ? await Product.findByIdAndUpdate(existing._id, { $set: { name: name.trim(), price: numericPrice, isAvailable: true } }, { new: true })
+          : await Product.create({
+            branchId: targetBranchId,
+            categoryId: targetCategory._id,
+            name: name.trim(),
+            price: numericPrice,
+            costPrice: targetBranchId.toString() === branch._id.toString() ? numericCost : null,
+            isAvailable: true,
+          });
+        if (targetBranchId.toString() === branch._id.toString()) sourceProduct = product;
+      }
+      return NextResponse.json({ product: sourceProduct, syncedBranches: branchIds.length }, { status: 201 });
     }
     const product = await Product.create({
       branchId,
