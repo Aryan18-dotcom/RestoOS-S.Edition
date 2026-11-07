@@ -6,6 +6,7 @@ const OrganizationSchema = new mongoose.Schema(
     upiId: { type: String, default: "" },
     upiPayerName: { type: String, default: "" },
     upiCurrency: { type: String, enum: ["INR"], default: "INR" },
+    upiSettingsMigratedToBranches: { type: Boolean, default: false },
   },
   { timestamps: { createdAt: true, updatedAt: false } },
 );

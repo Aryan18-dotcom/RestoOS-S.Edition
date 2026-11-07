@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import connectToDatabase from "@/lib/db";
 import { getSession } from "@/lib/auth";
 import Branch from "@/models/Branch";
-import Organization from "@/models/Organization";
+import { migrateLegacyUpiSettings } from "@/lib/branch-payment-settings";
 
 export async function GET() {
   const session = await getSession();
@@ -14,16 +14,7 @@ export async function GET() {
   let paymentSettings = { upiId: "", upiPayerName: "", upiCurrency: "INR" };
   if (session.orgId && (session.role === "OWNER" || session.role === "BRANCH_MANAGER" || session.role === "CAPTAIN")) {
     await connectToDatabase();
-    const organization = await Organization.findById(session.orgId)
-      .select("upiId upiPayerName upiCurrency")
-      .lean();
-    if (organization) {
-      paymentSettings = {
-        upiId: organization.upiId || "",
-        upiPayerName: organization.upiPayerName || "",
-        upiCurrency: organization.upiCurrency || "INR",
-      };
-    }
+    await migrateLegacyUpiSettings(session.orgId);
   }
   if (session.branchId) {
     await connectToDatabase();
@@ -32,8 +23,15 @@ export async function GET() {
       orgId: session.orgId,
       isActive: true,
     })
-      .select("name code address gstin autoPrintKOT autoPrintBill")
+      .select("name code address gstin upiId payerName autoPrintKOT autoPrintBill")
       .lean();
+    if (branch) {
+      paymentSettings = {
+        upiId: branch.upiId || "",
+        upiPayerName: branch.payerName || "",
+        upiCurrency: "INR",
+      };
+    }
   }
 
   return NextResponse.json({

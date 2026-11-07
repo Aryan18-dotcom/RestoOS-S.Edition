@@ -4,6 +4,7 @@ import { getSession } from "@/lib/auth";
 import Category from "@/models/Category";
 import Branch from "@/models/Branch";
 import { isBranchManagerRole } from "@/lib/roles";
+import { ensureCategoryForPath, getCategoryPath, getOrgBranchIds } from "@/lib/shared-menu";
 
 async function menuSession() {
   const session = await getSession();
@@ -37,7 +38,7 @@ export async function POST(request) {
     if (!isOwner && !isBranchManagerRole(session.role)) {
       return NextResponse.json({ error: "Menu management access required" }, { status: 403 });
     }
-    const { branchId, name, parentCategoryId } = await request.json();
+    const { branchId, name, parentCategoryId, syncAll } = await request.json();
     if (!branchId || !name) return NextResponse.json({ error: "branchId and name required" }, { status: 400 });
     await connectToDatabase();
     const branch = await Branch.findOne({ _id: branchId, orgId: session.orgId, isActive: true });
@@ -55,6 +56,16 @@ export async function POST(request) {
       if (!parent) {
         return NextResponse.json({ error: "Parent category not found or is not a top-level category" }, { status: 400 });
       }
+    }
+    if (syncAll && isOwner) {
+      const parentPath = parent?._id ? await getCategoryPath(parent._id) : [];
+      const branchIds = await getOrgBranchIds(session.orgId);
+      const created = [];
+      for (const targetBranchId of branchIds) {
+        created.push(await ensureCategoryForPath(targetBranchId, [...parentPath, name.trim()]));
+      }
+      const category = created.find((entry) => entry.branchId.toString() === branch._id.toString()) || created[0];
+      return NextResponse.json({ category, syncedBranches: created.length }, { status: 201 });
     }
     const category = await Category.create({
       branchId,

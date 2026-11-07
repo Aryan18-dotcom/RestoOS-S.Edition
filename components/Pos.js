@@ -6,6 +6,7 @@ import { formatTokenNumber } from "@/lib/order-token";
 import {
   Bluetooth,
   CircleDollarSign,
+  Eye,
   Minus,
   Plus,
   Printer,
@@ -38,8 +39,11 @@ export default function Pos() {
   const [cart, setCart] = useState([]);
   const [lastOrder, setLastOrder] = useState(null);
   const [showBill, setShowBill] = useState(false);
+  const [billEdit, setBillEdit] = useState(null);
+  const [showKot, setShowKot] = useState(false);
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
+  const [whatsappOptIn, setWhatsappOptIn] = useState(false);
   const [customerInfo, setCustomerInfo] = useState(null);
   const [customerLookup, setCustomerLookup] = useState({ loading: false, error: "" });
   const [discountPercent, setDiscountPercent] = useState(0);
@@ -69,6 +73,26 @@ export default function Pos() {
   const customerLookupMatches =
     customerInfo?.lookupForName === customerName.trim() &&
     customerInfo?.lookupForPhone === customerPhone;
+  const billEditSubtotal = billEdit
+    ? billEdit.items.reduce((sum, item) => {
+      const quantity = Number(item.quantity);
+      if (!Number.isInteger(quantity) || quantity <= 0) return sum;
+      const price = products.find((product) => product.id === item.productId)?.price ?? item.unitPrice;
+      return sum + Math.round(price * quantity * 100) / 100;
+    }, 0)
+    : 0;
+  const billEditCompositionChanged = billEdit
+    ? billEdit.items.length !== (lastOrder?.order.items.length || 0) ||
+      billEdit.items.some((item) => {
+        const existing = lastOrder?.order.items.find((entry) => entry.productId === item.productId);
+        return !existing || Number(item.quantity) !== existing.quantity;
+      })
+    : false;
+  const billEditTotal = billEdit
+    ? billEditCompositionChanged
+      ? billEditSubtotal + Number(lastOrder?.order.taxAmount || 0)
+      : Number(lastOrder?.order.grandTotal || 0)
+    : 0;
 
   useEffect(() => {
     async function load() {
@@ -112,6 +136,7 @@ export default function Pos() {
     const normalizedPhone = customerPhone.replace(/\D/g, "");
     if (customerName.trim().length < 2 || !/^\d{10}$/.test(normalizedPhone)) {
       setCustomerInfo(null);
+      setWhatsappOptIn(false);
       setCustomerLookup({ loading: false, error: "" });
       setDiscountPercent(0);
       return undefined;
@@ -134,6 +159,7 @@ export default function Pos() {
           lookupForName: customerName.trim(),
           lookupForPhone: normalizedPhone,
         });
+        setWhatsappOptIn(result.customer.whatsappOptIn === true);
         setDiscountPercent(result.customer.suggestedDiscountPercent || 0);
         setCustomerLookup({ loading: false, error: "" });
       } catch (error) {
@@ -268,6 +294,88 @@ export default function Pos() {
     }
   }
 
+  function beginBillEdit() {
+    if (!lastOrder) return;
+    setBillEdit({
+      notes: lastOrder.order.notes || "",
+      paymentMode: lastOrder.order.paymentMode,
+      items: lastOrder.order.items.map((item) => ({
+        productId: item.productId,
+        name: item.name,
+        quantity: String(item.quantity),
+        specialNote: item.specialNote || "",
+        unitPrice: item.unitPrice,
+        total: item.total,
+      })),
+    });
+    setStatus("");
+    setShowBill(false);
+  }
+
+  function addProductToBill(productId) {
+    const product = products.find((entry) => entry.id === productId);
+    if (!product || !billEdit) return;
+    const existing = billEdit.items.find((item) => item.productId === product.id);
+    setBillEdit((current) => ({
+      ...current,
+      items: existing
+        ? current.items.map((item) => item.productId === product.id
+          ? { ...item, quantity: String(Number(item.quantity) + 1) }
+          : item)
+        : [...current.items, {
+          productId: product.id,
+          name: product.name,
+          quantity: "1",
+          specialNote: "",
+          unitPrice: product.price,
+        }],
+    }));
+  }
+
+  async function saveBillEdit(event) {
+    event.preventDefault();
+    if (!lastOrder || !billEdit || busy) return;
+    const items = billEdit.items
+      .filter((item) => Number(item.quantity) > 0)
+      .map((item) => ({
+        productId: item.productId,
+        quantity: Number(item.quantity),
+        specialNote: item.specialNote,
+      }));
+    if (!items.length) {
+      setStatus("An order must contain at least one menu item.");
+      return;
+    }
+
+    setBusy(true);
+    try {
+      const orderId = lastOrder.order.id || lastOrder.order._id;
+      const response = await fetch(`/api/branch-manager/orders/${orderId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          notes: billEdit.notes,
+          paymentMode: billEdit.paymentMode,
+          items,
+        }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Unable to update order");
+      setLastOrder((current) => ({
+        ...current,
+        order: { ...result.order, id: String(result.order._id) },
+      }));
+      setBillEdit(null);
+      setQrDataUrl("");
+      setShowBill(true);
+      setStatus(`Order ${formatTokenNumber(result.order.tokenNumber)} updated. Item changes use current menu prices.`);
+    } catch (error) {
+      setStatus(error.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function settle(paymentMode, confirmedNoUpi = false) {
     if (!cart.length || busy) return;
     if (
@@ -295,6 +403,7 @@ export default function Pos() {
           })),
           customerName: customerName.trim(),
           customerPhone: customerPhone.replace(/\D/g, ""),
+          whatsappOptIn,
           discountPercent: appliedDiscountPercent,
           paymentMode,
           notes,
@@ -316,6 +425,7 @@ export default function Pos() {
       setCart([]);
       setCustomerName("");
       setCustomerPhone("");
+      setWhatsappOptIn(false);
       setCustomerInfo(null);
       setNotes("");
       setDiscountPercent(0);
@@ -367,7 +477,7 @@ export default function Pos() {
   if (authRequired) return <Login />;
 
   return (
-    <main className="min-h-screen">
+    <main className="min-h-screen lg:flex lg:h-screen lg:flex-col lg:overflow-hidden">
       <header className="flex flex-wrap items-center justify-between gap-4 border-b border-black/10 bg-white px-6 py-4">
         <div className="flex items-center gap-3">
           <div className="grid h-10 w-10 place-items-center rounded-xl bg-forest text-white">
@@ -422,8 +532,8 @@ export default function Pos() {
         </div>
       </header>
 
-      <div className="mx-auto grid max-w-[1500px] gap-5 p-4 lg:grid-cols-[minmax(0,1fr)_430px] lg:p-6">
-        <section>
+      <div className="mx-auto grid max-w-[1500px] gap-5 p-4 lg:w-full lg:flex-1 lg:min-h-0 lg:grid-cols-[minmax(0,1fr)_430px] lg:grid-rows-[minmax(0,1fr)] lg:p-6">
+        <section className="lg:min-h-0 lg:overflow-y-auto lg:overscroll-contain">
           <div className="mb-5 flex flex-wrap items-center justify-between gap-4">
             <div>
               <p className="text-sm text-black/50">Branch billing</p>
@@ -457,7 +567,7 @@ export default function Pos() {
                           {sectionProducts.map((product) => (
                             <button
                               key={product.id}
-                              onClick={() => addProduct(product)}
+                              onClick={() => billEdit ? addProductToBill(product.id) : addProduct(product)}
                               className="rounded-2xl border border-black/10 bg-white p-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-forest/40 hover:shadow-md"
                             >
                               <span className="mb-5 grid h-10 w-10 place-items-center rounded-xl bg-[#e7f2eb] text-forest">
@@ -477,13 +587,22 @@ export default function Pos() {
           )}
         </section>
 
-        <aside className="h-fit rounded-2xl border border-black/10 bg-white p-5 shadow-sm lg:sticky lg:top-5">
+        <aside className="rounded-2xl border border-black/10 bg-white p-5 shadow-sm lg:h-full lg:min-h-0 lg:overflow-y-auto lg:overscroll-contain">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-xs font-bold uppercase tracking-[0.16em] text-forest">Current order</p>
-              <h2 className="mt-1 text-xl font-bold">Checkout</h2>
+              <p className="text-xs font-bold uppercase tracking-[0.16em] text-forest">{billEdit ? "Editing order" : "Current order"}</p>
+              <h2 className="mt-1 text-xl font-bold">{billEdit ? `Token #${formatTokenNumber(lastOrder.order.tokenNumber)}` : "Checkout"}</h2>
             </div>
-            {cart.length > 0 && (
+            {billEdit ? (
+              <button
+                type="button"
+                onClick={() => setBillEdit(null)}
+                aria-label="Cancel order edit"
+                className="rounded-lg px-3 py-2 text-sm font-semibold text-black/55 hover:bg-paper"
+              >
+                Cancel
+              </button>
+            ) : cart.length > 0 && (
               <button
                 onClick={() => setCart([])}
                 aria-label="Clear order"
@@ -494,6 +613,8 @@ export default function Pos() {
             )}
           </div>
 
+          {!billEdit ? (
+            <>
           <div className="mt-5 grid gap-3">
             <label className="text-xs font-semibold text-black/55">
               CUSTOMER NAME
@@ -506,6 +627,7 @@ export default function Pos() {
                 onChange={(event) => {
                   setCustomerName(event.target.value);
                   setCustomerInfo(null);
+                  setWhatsappOptIn(false);
                   setDiscountPercent(0);
                 }}
                 placeholder="Customer name"
@@ -524,11 +646,21 @@ export default function Pos() {
                 onChange={(event) => {
                   setCustomerPhone(event.target.value.replace(/\D/g, "").slice(0, 10));
                   setCustomerInfo(null);
+                  setWhatsappOptIn(false);
                   setDiscountPercent(0);
                 }}
                 placeholder="10-digit mobile number"
                 className="mt-1 w-full rounded-lg border border-black/10 px-3 py-2 text-sm text-ink outline-none focus:border-forest"
               />
+            </label>
+            <label className="flex items-start gap-2 text-xs text-black/60">
+              <input
+                type="checkbox"
+                checked={whatsappOptIn}
+                onChange={(event) => setWhatsappOptIn(event.target.checked)}
+                className="mt-0.5 accent-forest"
+              />
+              <span>Customer agrees to receive WhatsApp messages from this restaurant. Leave unchecked if they have not consented.</span>
             </label>
             {(customerLookup.loading || customerInfo || customerLookup.error) && (
               <div className="rounded-lg bg-paper p-3 text-xs">
@@ -558,7 +690,7 @@ export default function Pos() {
             </label>
           </div>
 
-          <div className="mt-5 max-h-[34vh] space-y-4 overflow-auto">
+          <div className="mt-5 space-y-4">
             {cart.length === 0 ? (
               <div className="rounded-xl bg-paper p-6 text-center text-sm text-black/45">
                 Tap a menu item to add it to this order.
@@ -659,7 +791,57 @@ export default function Pos() {
               {activePayment === "UPI" ? "Saving..." : "Settle UPI"}
             </button>
           </div>
-          <div className="mt-2 grid grid-cols-3 gap-2">
+            </>
+          ) : (
+            <form onSubmit={saveBillEdit} className="mt-5">
+              <p className="text-sm text-black/55">{lastOrder.order.customerName} · {lastOrder.order.customerPhone}</p>
+              <label className="mt-4 block text-xs font-semibold text-black/55">
+                ORDER NOTE
+                <input value={billEdit.notes} maxLength={300} onChange={(event) => setBillEdit({ ...billEdit, notes: event.target.value })} className="mt-1 w-full rounded-lg border border-black/10 px-3 py-2 text-sm" />
+              </label>
+              <label className="mt-3 block text-xs font-semibold text-black/55">
+                PAYMENT MODE
+                <select value={billEdit.paymentMode} onChange={(event) => setBillEdit({ ...billEdit, paymentMode: event.target.value })} className="mt-1 w-full rounded-lg border border-black/10 bg-white px-3 py-2 text-sm">
+                  <option value="CASH">Cash</option><option value="UPI">UPI</option>
+                </select>
+              </label>
+              <div className="mt-5 space-y-4">
+                {billEdit.items.map((item, index) => {
+                  const unitPrice = products.find((product) => product.id === item.productId)?.price ?? item.unitPrice;
+                  return (
+                    <div key={`${item.productId}-${index}`} className="border-b border-black/5 pb-4">
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <p className="font-semibold">{item.name}</p>
+                          <p className="mt-1 text-xs text-black/50">{money(unitPrice)} each</p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <button type="button" onClick={() => setBillEdit((current) => ({ ...current, items: current.items.map((entry, itemIndex) => itemIndex === index ? { ...entry, quantity: String(Math.max(0, Number(entry.quantity) - 1)) } : entry) }))} aria-label={`Decrease ${item.name}`} className="grid h-7 w-7 place-items-center rounded-md border border-black/10"><Minus size={14} /></button>
+                          <input aria-label={`${item.name} quantity`} type="number" min="0" max="999" step="1" value={item.quantity} onChange={(event) => setBillEdit((current) => ({ ...current, items: current.items.map((entry, itemIndex) => itemIndex === index ? { ...entry, quantity: event.target.value } : entry) }))} className="h-8 w-14 rounded border border-black/10 px-2 text-center" />
+                          <button type="button" onClick={() => setBillEdit((current) => ({ ...current, items: current.items.map((entry, itemIndex) => itemIndex === index ? { ...entry, quantity: String(Math.min(999, Number(entry.quantity) + 1)) } : entry) }))} aria-label={`Increase ${item.name}`} className="grid h-7 w-7 place-items-center rounded-md border border-black/10"><Plus size={14} /></button>
+                        </div>
+                      </div>
+                      <label className="mt-2 block text-xs font-semibold text-black/50">
+                        SPECIAL NOTE FOR THIS ITEM
+                        <input value={item.specialNote} maxLength={300} onChange={(event) => setBillEdit((current) => ({ ...current, items: current.items.map((entry, itemIndex) => itemIndex === index ? { ...entry, specialNote: event.target.value } : entry) }))} placeholder={`e.g. less spicy, for ${item.name}`} className="mt-1 w-full rounded-lg border border-black/10 px-3 py-2 text-sm text-ink outline-none focus:border-forest" />
+                      </label>
+                    </div>
+                  );
+                })}
+              </div>
+              <p className="mt-3 text-xs text-black/45">Tap menu items to add them to this order. Changed quantities use current menu prices and clear the previous discount.</p>
+              <div className="mt-5 space-y-2 border-t border-black/10 pt-4 text-sm">
+                <div className="flex justify-between text-black/55"><span>Subtotal</span><span>{money(billEditCompositionChanged ? billEditSubtotal : lastOrder.order.subtotal)}</span></div>
+                {!billEditCompositionChanged && lastOrder.order.discountAmount > 0 && <div className="flex justify-between text-green-700"><span>Discount ({lastOrder.order.discountPercent}%)</span><span>−{money(lastOrder.order.discountAmount)}</span></div>}
+                <div className="flex justify-between text-black/55"><span>Tax</span><span>{money(lastOrder.order.taxAmount)}</span></div>
+                <div className="flex justify-between border-t border-black/10 pt-2 text-lg font-bold"><span>Total</span><span>{money(billEditTotal)}</span></div>
+              </div>
+              <button type="submit" disabled={busy || billEdit.items.every((item) => Number(item.quantity) <= 0)} className="mt-4 w-full rounded-xl bg-forest px-3 py-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-40">
+                {busy ? "Saving…" : "Save order changes"}
+              </button>
+            </form>
+          )}
+          {!billEdit && <div className="mt-2 grid grid-cols-3 gap-2">
             <button
               disabled={!lastOrder}
               onClick={() => setShowBill(true)}
@@ -681,7 +863,14 @@ export default function Pos() {
             >
               <Printer size={15} /> Manual print KOT
             </button>
-          </div>
+            <button
+              disabled={!lastOrder}
+              onClick={() => setShowKot(true)}
+              className="flex items-center justify-center gap-2 rounded-lg px-2 py-2 text-xs font-semibold text-black/55 hover:bg-paper"
+            >
+              <Eye size={15} /> View KOT
+            </button>
+          </div>}
           {status && <p role="status" className="mt-3 rounded-lg bg-paper p-3 text-xs text-black/70">{status}</p>}
         </aside>
       </div>
@@ -711,39 +900,58 @@ export default function Pos() {
               <div className="text-right"><p className="text-xs text-black/45">DATE & TIME</p><p className="mt-1">{new Date(lastOrder.order.createdAt).toLocaleString("en-IN")}</p></div>
             </div>
             <p className="mt-3 text-sm"><span className="text-black/50">Customer:</span> {lastOrder.order.customerName} · {lastOrder.order.customerPhone}</p>
-            {lastOrder.order.notes && (
+            {billEdit ? (
+              <div className="mt-3 space-y-3">
+                <label className="block text-xs font-semibold text-black/55">
+                  ORDER NOTE
+                  <input value={billEdit.notes} maxLength={300} onChange={(event) => setBillEdit({ ...billEdit, notes: event.target.value })} className="mt-1 w-full rounded-lg border border-black/10 px-3 py-2 text-sm" />
+                </label>
+                <label className="block text-xs font-semibold text-black/55">
+                  PAYMENT MODE
+                  <select value={billEdit.paymentMode} onChange={(event) => setBillEdit({ ...billEdit, paymentMode: event.target.value })} className="mt-1 w-full rounded-lg border border-black/10 bg-white px-3 py-2 text-sm">
+                    <option value="CASH">Cash</option><option value="UPI">UPI</option>
+                  </select>
+                </label>
+              </div>
+            ) : lastOrder.order.notes && (
               <p className="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-950">
-                <span className="font-semibold">Special note:</span> {lastOrder.order.notes}
+                <span className="font-semibold">Order note:</span> {lastOrder.order.notes}
               </p>
             )}
+            {status && <p role="status" className="mt-3 rounded-lg bg-paper p-2 text-xs text-black/70">{status}</p>}
 
             <div className="mt-4">
               <div className="grid grid-cols-[1fr_auto_auto] gap-3 border-b border-black/10 pb-2 text-xs font-semibold uppercase text-black/45">
                 <span>Item</span><span className="text-right">Qty</span><span className="text-right">Amount</span>
               </div>
               <div className="divide-y divide-black/5">
-                {lastOrder.order.items.map((item, index) => (
+                {(billEdit ? billEdit.items : lastOrder.order.items).map((item, index) => (
                   <div key={`${item.name}-${index}`} className="grid grid-cols-[1fr_auto_auto] gap-3 py-2 text-sm">
                     <div>
                       <p className="font-medium">{item.name}</p>
                       <p className="text-xs text-black/45">{money(item.unitPrice)} each</p>
-                      {item.specialNote && <p className="mt-1 text-xs text-amber-800">Special note: {item.specialNote}</p>}
+                      {billEdit ? (
+                        <input aria-label={`${item.name} special note`} maxLength={300} value={item.specialNote} onChange={(event) => setBillEdit({ ...billEdit, items: billEdit.items.map((entry) => entry.productId === item.productId ? { ...entry, specialNote: event.target.value } : entry) })} placeholder={`Special note for ${item.name}…`} className="mt-2 w-full rounded border border-black/10 px-2 py-1.5 text-xs" />
+                      ) : item.specialNote && <p className="mt-1 text-xs text-amber-800">Special note: {item.specialNote}</p>}
                     </div>
-                    <span className="text-right">{item.quantity}</span>
-                    <span className="text-right font-medium">{money(item.total)}</span>
+                    {billEdit ? (
+                      <input aria-label={`${item.name} quantity`} type="number" min="0" max="999" value={item.quantity} onChange={(event) => setBillEdit({ ...billEdit, items: billEdit.items.map((entry) => entry.productId === item.productId ? { ...entry, quantity: event.target.value } : entry) })} className="h-8 w-16 rounded border border-black/10 px-2 text-right" />
+                    ) : <span className="text-right">{item.quantity}</span>}
+                    <span className="text-right font-medium">{money(billEdit && billEditCompositionChanged ? (products.find((product) => product.id === item.productId)?.price ?? item.unitPrice) * Number(item.quantity || 0) : item.total)}</span>
                   </div>
                 ))}
               </div>
             </div>
 
             <div className="mt-3 space-y-2 border-t border-dashed border-black/20 pt-3 text-sm">
-              <div className="flex justify-between text-black/55"><span>Subtotal</span><span>{money(lastOrder.order.subtotal)}</span></div>
-              {lastOrder.order.discountAmount > 0 && <div className="flex justify-between text-green-700"><span>Discount ({lastOrder.order.discountPercent}%)</span><span>−{money(lastOrder.order.discountAmount)}</span></div>}
+              <div className="flex justify-between text-black/55"><span>Subtotal</span><span>{money(billEdit && billEditCompositionChanged ? billEditSubtotal : lastOrder.order.subtotal)}</span></div>
+              {(!billEdit || !billEditCompositionChanged) && lastOrder.order.discountAmount > 0 && <div className="flex justify-between text-green-700"><span>Discount ({lastOrder.order.discountPercent}%)</span><span>−{money(lastOrder.order.discountAmount)}</span></div>}
               <div className="flex justify-between text-black/55"><span>Tax</span><span>{money(lastOrder.order.taxAmount)}</span></div>
-              <div className="flex justify-between border-t border-black/10 pt-2 text-lg font-bold"><span>Total</span><span>{money(lastOrder.order.grandTotal)}</span></div>
-              <div className="flex justify-between text-xs text-black/55"><span>Paid by</span><span>{lastOrder.order.paymentMode}</span></div>
+              <div className="flex justify-between border-t border-black/10 pt-2 text-lg font-bold"><span>Total</span><span>{money(billEdit ? billEditTotal : lastOrder.order.grandTotal)}</span></div>
+              <div className="flex justify-between text-xs text-black/55"><span>Paid by</span><span>{billEdit ? billEdit.paymentMode : lastOrder.order.paymentMode}</span></div>
+              {billEdit && billEditCompositionChanged && <p className="text-xs text-black/45">Changing item quantities recalculates the total at current menu prices and clears the previous discount.</p>}
             </div>
-            {qrDataUrl && (
+            {!billEdit && qrDataUrl && (
               <div className="mt-4 flex items-center gap-3 rounded-xl bg-paper p-3">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img src={qrDataUrl} alt={`UPI payment QR for ${money(lastOrder.order.grandTotal)}`} className="h-28 w-28 rounded bg-white p-1" />
@@ -754,12 +962,77 @@ export default function Pos() {
                 </div>
               </div>
             )}
-            <p className="mt-5 text-center text-xs text-black/45">Thank you!</p>
+            {!billEdit && <p className="mt-5 text-center text-xs text-black/45">Thank you!</p>}
 
             <div className="mt-5 flex justify-end gap-2">
-              <button onClick={() => setShowBill(false)} className="rounded-lg border border-black/10 px-4 py-2 text-sm font-semibold">Close</button>
-              <button onClick={() => printLastOrder("bill")} className="flex items-center gap-2 rounded-lg bg-forest px-4 py-2 text-sm font-bold text-white">
-                <Printer size={15} /> Print bill
+              {billEdit ? (
+                <>
+                  <button type="button" disabled={busy} onClick={() => setBillEdit(null)} className="rounded-lg border border-black/10 px-4 py-2 text-sm font-semibold disabled:opacity-40">Cancel</button>
+                  <button type="button" disabled={busy} onClick={saveBillEdit} className="rounded-lg bg-forest px-4 py-2 text-sm font-bold text-white disabled:opacity-40">
+                    {busy ? "Saving…" : "Save changes"}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button onClick={() => setShowBill(false)} className="rounded-lg border border-black/10 px-4 py-2 text-sm font-semibold">Close</button>
+                  <button onClick={beginBillEdit} className="rounded-lg border border-forest px-4 py-2 text-sm font-bold text-forest">Edit order</button>
+                  <button onClick={() => printLastOrder("bill")} className="flex items-center gap-2 rounded-lg bg-forest px-4 py-2 text-sm font-bold text-white">
+                    <Printer size={15} /> Print bill
+                  </button>
+                </>
+              )}
+            </div>
+          </section>
+        </div>
+      )}
+
+      {showKot && lastOrder && (
+        <div
+          className="fixed inset-0 z-50 grid place-items-center overflow-y-auto bg-black/50 p-4"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setShowKot(false);
+          }}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="kot-title"
+            className="my-8 w-full max-w-md rounded-2xl bg-white p-6 shadow-xl"
+          >
+            <div className="text-center">
+              <p className="text-xs font-bold uppercase tracking-widest text-forest">Kitchen order ticket</p>
+              <h2 id="kot-title" className="mt-1 text-xl font-bold">{lastOrder.branch.name || "Kitchen"}</h2>
+            </div>
+            <div className="mt-4 flex justify-between border-y border-dashed border-black/20 py-3 text-sm">
+              <div>
+                <p className="text-xs text-black/45">TOKEN NUMBER</p>
+                <p className="mt-1 text-2xl font-bold">#{formatTokenNumber(lastOrder.order.tokenNumber)}</p>
+              </div>
+              <div className="text-right">
+                <p className="text-xs text-black/45">TIME</p>
+                <p className="mt-1">{new Date(lastOrder.order.createdAt).toLocaleTimeString("en-IN")}</p>
+              </div>
+            </div>
+            {lastOrder.order.customerName && (
+              <p className="mt-3 text-sm"><span className="text-black/50">Customer:</span> {lastOrder.order.customerName}</p>
+            )}
+            <div className="mt-4 divide-y divide-black/10">
+              {lastOrder.order.items.map((item, index) => (
+                <div key={`${item.name}-${index}`} className="py-3">
+                  <p className="font-semibold">{item.quantity} × {item.name}</p>
+                  {item.specialNote && <p className="mt-1 whitespace-pre-wrap text-sm text-amber-800">Note: {item.specialNote}</p>}
+                </div>
+              ))}
+            </div>
+            {lastOrder.order.notes && (
+              <p className="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-950">
+                <span className="font-semibold">Order note:</span> {lastOrder.order.notes}
+              </p>
+            )}
+            <div className="mt-5 flex justify-end gap-2">
+              <button onClick={() => setShowKot(false)} className="rounded-lg border border-black/10 px-4 py-2 text-sm font-semibold">Close</button>
+              <button onClick={() => printLastOrder("kot")} className="flex items-center gap-2 rounded-lg bg-forest px-4 py-2 text-sm font-bold text-white">
+                <Printer size={15} /> Print KOT
               </button>
             </div>
           </section>
